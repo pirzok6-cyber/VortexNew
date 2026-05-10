@@ -1,0 +1,462 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = env("DB_PROVIDER")
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  username    String   @unique
+  displayName String   @default("")
+  email       String?  @unique
+  phone       String?
+  password    String
+  avatar      String?
+  bio         String?
+  birthday    String?
+  createdAt   DateTime @default(now())
+  lastSeen    DateTime @default(now())
+  isOnline    Boolean  @default(false)
+  hideStoryViews Boolean @default(false)
+  registrationIp String?
+
+  messages    Message[]
+  chatMembers ChatMember[]
+  reactions   Reaction[]
+  readReceipts ReadReceipt[]
+  forwardedMessages Message[] @relation("ForwardedFrom")
+  stories     Story[]
+  storyViews  StoryView[]
+  friendshipsSent     Friendship[] @relation("FriendshipsSent")
+  friendshipsReceived Friendship[] @relation("FriendshipsReceived")
+
+  // ─── User settings (1:1) and E2EE identity (1:1) ───────────
+  settings     UserSettings?
+  identityKey  IdentityKey?
+  signedPreKeys SignedPreKey[]
+  oneTimePreKeys OneTimePreKey[]
+
+  // ─── New features ────────────────────────────────────────
+  blocksMade     BlockedUser[] @relation("BlocksMade")
+  blockedByOthers BlockedUser[] @relation("BlockedByOthers")
+  pollVotes      PollVote[]
+  mentions       Mention[]         @relation("Mentioned")
+  chatFolders    ChatFolder[]
+  channelSubs    ChannelSubscription[]
+}
+
+// ─── User-selectable settings (theme, notifications, privacy, devices) ───
+model UserSettings {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  // Appearance
+  theme       String @default("system")   // "light" | "dark" | "system"
+  accentColor String @default("#6366f1")
+  fontSize    String @default("medium")   // "small" | "medium" | "large"
+  language    String @default("ru")
+
+  // Notifications
+  notifyEnabled    Boolean @default(true)
+  notifySound      Boolean @default(true)
+  notifyPreview    Boolean @default(true)
+  notifyReactions  Boolean @default(true)
+  notifyMentions   Boolean @default(true)
+
+  // Privacy
+  showOnline         Boolean @default(true)
+  showLastSeen       Boolean @default(true)
+  showReadReceipts   Boolean @default(true)
+  showTyping         Boolean @default(true)
+  whoCanMessageMe    String  @default("everyone") // "everyone" | "friends" | "nobody"
+  whoCanCallMe       String  @default("everyone") // "everyone" | "friends" | "nobody"
+
+  // Call defaults — user-selected devices for WebRTC calls
+  defaultMicId       String?
+  defaultMicLabel    String?
+  defaultCameraId    String?
+  defaultCameraLabel String?
+  defaultSpeakerId   String?
+  defaultSpeakerLabel String?
+  echoCancellation   Boolean @default(true)
+  noiseSuppression   Boolean @default(true)
+  autoGainControl    Boolean @default(true)
+  videoQuality       String  @default("hd")   // "sd" | "hd" | "fhd"
+  mirrorSelfView     Boolean @default(true)
+
+
+  // Тип устройства (пользователь выбирает вручную)
+  deviceType            String  @default("auto")  // "auto" | "phone" | "tablet" | "laptop" | "desktop"
+
+  // Предпочитаемый вывод звука в звонках
+  audioOutput           String  @default("auto")  // "auto" | "earpiece" | "speaker" | "wired" | "bluetooth" | "system"
+
+  // Предпочитаемый микрофон
+  audioInput            String  @default("auto")  // "auto" | "builtin" | "wired" | "bluetooth"
+
+  // Автопереключение при подключении наушников
+  autoSwitchAudioOutput Boolean @default(true)
+
+  // Chat preferences
+  enterToSend       Boolean @default(true)
+  autoDownloadMedia String  @default("wifi")  // "always" | "wifi" | "never"
+  chatWallpaper     String?
+  e2eeByDefault     Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ─── Signal-like E2EE keys ────────────────────────────────────────
+// Long-term identity public key (Curve25519 / Ed25519)
+model IdentityKey {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  publicKey  String   // base64-encoded public key
+  deviceId   String   @default("default")
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Signed pre-key (rotated periodically) — signed by identity key
+model SignedPreKey {
+  id         String   @id @default(uuid())
+  userId     String
+  keyId      Int      // client-assigned rotation id
+  publicKey  String   // base64
+  signature  String   // base64 (signed by identity key)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, keyId])
+}
+
+// One-time pre-keys — each consumed on first use
+model OneTimePreKey {
+  id         String   @id @default(uuid())
+  userId     String
+  keyId      Int
+  publicKey  String   // base64
+  consumed   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, keyId])
+  @@index([userId, consumed])
+}
+
+model Chat {
+  id        String   @id @default(uuid())
+  type      String   @default("personal")  // personal | group | favorites | channel
+  name      String?
+  avatar    String?
+  description String?                       // for channels/groups
+  isPublic  Boolean  @default(false)        // public channels discoverable via /api/channels/discover
+  createdAt DateTime @default(now())
+
+  members        ChatMember[]
+  messages       Message[]
+  pinnedMessages PinnedMessage[]
+  subscribers    ChannelSubscription[]
+  folderMembers  ChatFolderMember[]
+}
+
+model ChatMember {
+  id         String    @id @default(uuid())
+  chatId     String
+  userId     String
+  role       String    @default("member")
+  joinedAt   DateTime  @default(now())
+  isMuted    Boolean   @default(false)
+  isArchived Boolean   @default(false)
+  isPinned   Boolean   @default(false)
+  clearedAt  DateTime?
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  chatId    String
+  senderId  String
+  content   String?
+  type      String   @default("text")
+  replyToId String?
+  quote     String?
+  forwardedFromId String?
+  isEdited  Boolean  @default(false)
+  isDeleted Boolean  @default(false)
+  scheduledAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ─── Thread support (branch off a parent message) ────────
+  threadRootId String?
+  threadRoot   Message?  @relation("Thread", fields: [threadRootId], references: [id])
+  threadReplies Message[] @relation("Thread")
+
+  // ─── E2EE ──────────────────────────────────────────────────
+  // If true, `content` holds client-side ciphertext (base64). Server cannot read it.
+  isEncrypted Boolean @default(false)
+  // Optional per-recipient envelopes for group / multi-device E2EE
+  e2eeEnvelopes E2EEEnvelope[]
+  mentions    Mention[]
+  poll        Poll?
+
+  chat    Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender  User     @relation(fields: [senderId], references: [id])
+  replyTo Message? @relation("Reply", fields: [replyToId], references: [id])
+  replies Message[] @relation("Reply")
+  forwardedFrom User? @relation("ForwardedFrom", fields: [forwardedFromId], references: [id])
+
+  media          Media[]
+  reactions      Reaction[]
+  readBy         ReadReceipt[]
+  pinnedIn       PinnedMessage[]
+  hiddenBy       HiddenMessage[]
+}
+
+model Media {
+  id        String  @id @default(uuid())
+  messageId String
+  type      String
+  url       String
+  filename  String?
+  thumbnail String?
+  size      Int?
+  duration  Float?
+  width     Int?
+  height    Int?
+  waveform  String?  // JSON array of normalized amplitude samples for voice messages
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model Reaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId, emoji])
+}
+
+model ReadReceipt {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId])
+}
+
+model PinnedMessage {
+  id        String   @id @default(uuid())
+  chatId    String
+  messageId String
+  pinnedAt  DateTime @default(now())
+
+  chat    Chat    @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, messageId])
+}
+
+model Story {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   @default("text")
+  mediaUrl  String?
+  content   String?
+  bgColor   String?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  views StoryView[]
+}
+
+model StoryView {
+  id       String   @id @default(uuid())
+  storyId  String
+  userId   String
+  viewedAt DateTime @default(now())
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@unique([storyId, userId])
+}
+
+model HiddenMessage {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  hiddenAt  DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+}
+
+model Friendship {
+  id        String   @id @default(uuid())
+  userId    String
+  friendId  String
+  status    String   @default("pending") // pending | accepted | declined
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User @relation("FriendshipsSent", fields: [userId], references: [id], onDelete: Cascade)
+  friend User @relation("FriendshipsReceived", fields: [friendId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, friendId])
+}
+
+// Per-recipient E2EE envelope (allows sending the same message to multiple
+// recipients — each with its own encrypted session key).
+model E2EEEnvelope {
+  id           String   @id @default(uuid())
+  messageId    String
+  recipientId  String   // target user id
+  deviceId     String   @default("default")
+  ciphertext   String   // base64, encrypted session key / payload for this recipient
+  messageType  Int      @default(1)  // 1=prekey message (X3DH), 2=regular (Double Ratchet)
+  createdAt    DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([recipientId])
+}
+
+// ─── Blocked users (blocker cannot receive msgs/calls from blocked) ───
+model BlockedUser {
+  id         String   @id @default(uuid())
+  blockerId  String
+  blockedId  String
+  createdAt  DateTime @default(now())
+
+  blocker User @relation("BlocksMade",      fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("BlockedByOthers", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+}
+
+// ─── Polls ────────────────────────────────────────────────────────
+model Poll {
+  id          String   @id @default(uuid())
+  messageId   String   @unique
+  question    String
+  multiChoice Boolean  @default(false)
+  anonymous   Boolean  @default(false)
+  closesAt    DateTime?
+  closed      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  message Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  options PollOption[]
+  votes   PollVote[]
+}
+
+model PollOption {
+  id      String @id @default(uuid())
+  pollId  String
+  text    String
+  order   Int    @default(0)
+
+  poll  Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes PollVote[]
+}
+
+model PollVote {
+  id       String   @id @default(uuid())
+  pollId   String
+  optionId String
+  userId   String
+  votedAt  DateTime @default(now())
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, userId])
+  @@index([pollId, userId])
+}
+
+// ─── @username mentions ──────────────────────────────────────────
+model Mention {
+  id         String   @id @default(uuid())
+  messageId  String
+  userId     String   // mentioned user
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation("Mentioned", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@unique([messageId, userId])
+}
+
+// ─── Chat folders (categories: work, family, friends…) ───────────
+model ChatFolder {
+  id        String   @id @default(uuid())
+  userId    String
+  name      String
+  icon      String?
+  color     String?
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  user    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  members ChatFolderMember[]
+
+  @@index([userId, order])
+}
+
+model ChatFolderMember {
+  id       String @id @default(uuid())
+  folderId String
+  chatId   String
+  order    Int    @default(0)
+
+  folder ChatFolder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  chat   Chat       @relation(fields: [chatId],   references: [id], onDelete: Cascade)
+
+  @@unique([folderId, chatId])
+}
+
+// ─── Channel subscribers (read-only audience for channel chats) ──
+model ChannelSubscription {
+  id          String   @id @default(uuid())
+  chatId      String   // must reference a Chat of type='channel'
+  userId      String
+  isMuted     Boolean  @default(false)
+  subscribedAt DateTime @default(now())
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@index([userId])
+}
